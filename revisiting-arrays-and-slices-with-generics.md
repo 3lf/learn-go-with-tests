@@ -1,4 +1,4 @@
-# Revisiting arrays and slices with generics (DRAFT)
+# Revisiting arrays and slices with generics
 
 **[The code for this chapter is a continuation from Arrays and Slices, found here](https://github.com/quii/learn-go-with-tests/tree/main/arrays)**
 
@@ -32,9 +32,9 @@ func SumAllTails(numbersToSum ...[]int) []int {
 
 Do you see a recurring pattern?
 
-- Create some kind of "initial" value, or accumulator.
-- Iterate over the collection, applying some kind of operation (or function) to the accumulator and the next item in the slice.
-- Return the accumulator.
+- Create some kind of "initial" result value.
+- Iterate over the collection, applying some kind of operation (or function) to the result and the next item in the slice, setting a new value for the result
+- Return the result.
 
 This idea is commonly talked about in functional programming circles, often times called 'reduce' or [fold](https://en.wikipedia.org/wiki/Fold_(higher-order_function)).
 
@@ -64,27 +64,27 @@ You should be familiar with the generics syntax [from the previous chapter](gene
 
 ### Hints
 
-- You only need to work with one type, but one will return `int`, the other `[]int`.
-- If you think about the arguments to your function first, it'll give you a very small set of valid solutions
+If you think about the arguments to your function first, it'll give you a very small set of valid solutions
   - The array you want to reduce
-  - Some kind of combining function
+  - Some kind of combining function, or _accumulator_
 
 "Reduce" is an incredibly well documented pattern, there's no need to re-invent the wheel. [Read the wiki, in particular the lists section](https://en.wikipedia.org/wiki/Fold_(higher-order_function)), it should prompt you for another argument you'll need.
 
 > In practice, it is convenient and natural to have an initial value
 
-### My reduce function
+### My first-pass of `Reduce`
 
 ```go
-func Reduce[A any](collection []A, accumulator A, f func(A, A) A) A {
+func Reduce[A any](collection []A, accumulator func(A, A) A, initialValue A) A {
+	var result = initialValue
 	for _, x := range collection {
-		accumulator = f(accumulator, x)
+		result = accumulator(result, x)
 	}
-	return accumulator
+	return result
 }
 ```
 
-Reduce captures the _essence_ of the pattern, it's a function that takes a collection, an initial value and a combining function, and returns a single value. There's no messy distractions around concrete types.
+Reduce captures the _essence_ of the pattern, it's a function that takes a collection, an accumulating function, an initial value, and returns a single value. There's no messy distractions around concrete types.
 
 If you understand generics syntax, you should have no problem understanding what this function does. By using the recognised term `Reduce`, programmers from other languages understand the intent too.
 
@@ -94,7 +94,7 @@ If you understand generics syntax, you should have no problem understanding what
 // Sum calculates the total from a slice of numbers.
 func Sum(numbers []int) int {
 	add := func(acc, x int) int { return acc + x }
-	return Reduce(numbers, 0, add)
+	return Reduce(numbers, add, 0)
 }
 
 // SumAllTails calculates the sums of all but the first number given a collection of slices.
@@ -108,7 +108,7 @@ func SumAllTails(numbers ...[]int) []int {
 		}
 	}
 
-	return Reduce(numbers, []int{}, sumTail)
+	return Reduce(numbers, sumTail, []int{})
 }
 ```
 
@@ -125,7 +125,7 @@ func TestReduce(t *testing.T) {
 			return x * y
 		}
 
-		AssertEqual(t, Reduce([]int{1, 2, 3}, 1, multiply), 6)
+		AssertEqual(t, Reduce([]int{1, 2, 3}, multiply, 1), 6)
 	})
 
 	t.Run("concatenate strings", func(t *testing.T) {
@@ -133,14 +133,14 @@ func TestReduce(t *testing.T) {
 			return x + y
 		}
 
-		AssertEqual(t, Reduce([]string{"a", "b", "c"}, "", concatenate), "abc")
+		AssertEqual(t, Reduce([]string{"a", "b", "c"}, concatenate, ""), "abc")
 	})
 }
 ```
 
 ### The zero value
 
-In the multiplication example, we show the reason for having a default value as an argument to `Reduce`. If we relied on Go's default value of 0, we'd multiply our initial value by 0, and then the following ones, so you'd only ever get 0. By setting it to 1, the first element in the slice will stay the same, and the rest will multiply by the next elements.
+In the multiplication example, we show the reason for having a default value as an argument to `Reduce`. If we relied on Go's default value of 0 for `int`, we'd multiply our initial value by 0, and then the following ones, so you'd only ever get 0. By setting it to 1, the first element in the slice will stay the same, and the rest will multiply by the next elements.
 
 If you wish to sound clever with your nerd friends, you'd call this [The Identity Element](https://en.wikipedia.org/wiki/Identity_element).
 
@@ -156,7 +156,7 @@ With multiplication, it is 1.
 
 ## What if we wish to reduce into a different type from `A`?
 
-Suppose we had a list of transactions `Transaction` and we wanted a function that would take them plus a name to figure out their bank balance.
+Suppose we had a list of transactions `Transaction` and we wanted a function that would take them, plus a name to figure out their bank balance.
 
 Let's follow the TDD process.
 
@@ -252,7 +252,7 @@ func BalanceFor(transactions []Transaction, name string) float64 {
 		}
 		return currentBalance
 	}
-	return Reduce(transactions, 0.0, adjustBalance)
+	return Reduce(transactions, adjustBalance, 0.0)
 }
 ```
 
@@ -265,15 +265,89 @@ But this won't compile.
 The reason is we're trying to reduce to a _different_ type than the type of the collection. This sounds scary, but actually just requires us to adjust the type signature of `Reduce` to make it work. We won't have to change the function body, and we won't have to change any of our existing callers.
 
 ```go
-func Reduce[A, B any](collection []A, accumulator B, f func(B, A) B) B {
+func Reduce[A, B any](collection []A, accumulator func(B, A) B, initialValue B) B {
+	var result = initialValue
 	for _, x := range collection {
-		accumulator = f(accumulator, x)
+		result = accumulator(result, x)
 	}
-	return accumulator
+	return result
 }
 ```
 
-We've added a second type constraint which has allowed us to loosen the constraints on `Reduce`, whilst keeping it type-safe. This makes it more general-purpose and reusable. If you try and run the tests again they should compile, and pass.
+We've added a second type constraint which has allowed us to loosen the constraints on `Reduce`. This allows people to `Reduce` from a collection of `A` into a `B`. In our case from `Transaction` to `float64`.
+
+This makes `Reduce` more general-purpose and reusable, and still type-safe. If you try and run the tests again they should compile, and pass.
+
+## Extending the bank
+
+For fun, I wanted to improve the ergonomics of the bank code. I've omitted the TDD process for brevity.
+
+```go
+func TestBadBank(t *testing.T) {
+	var (
+		riya  = Account{Name: "Riya", Balance: 100}
+		chris = Account{Name: "Chris", Balance: 75}
+		adil  = Account{Name: "Adil", Balance: 200}
+
+		transactions = []Transaction{
+			NewTransaction(chris, riya, 100),
+			NewTransaction(adil, chris, 25),
+		}
+	)
+
+	newBalanceFor := func(account Account) float64 {
+		return NewBalanceFor(account, transactions).Balance
+	}
+
+	AssertEqual(t, newBalanceFor(riya), 200)
+	AssertEqual(t, newBalanceFor(chris), 0)
+	AssertEqual(t, newBalanceFor(adil), 175)
+}
+```
+
+And here's the updated code
+
+```go
+package main
+
+type Transaction struct {
+	From string
+	To   string
+	Sum  float64
+}
+
+func NewTransaction(from, to Account, sum float64) Transaction {
+	return Transaction{From: from.Name, To: to.Name, Sum: sum}
+}
+
+type Account struct {
+	Name    string
+	Balance float64
+}
+
+func NewBalanceFor(account Account, transactions []Transaction) Account {
+	return Reduce(
+		transactions,
+		applyTransaction,
+		account,
+	)
+}
+
+func applyTransaction(a Account, transaction Transaction) Account {
+	if transaction.From == a.Name {
+		a.Balance -= transaction.Sum
+	}
+	if transaction.To == a.Name {
+		a.Balance += transaction.Sum
+	}
+	return a
+}
+```
+
+I feel this really shows the power of using concepts like `Reduce`. The `NewBalanceFor` feels more _declarative_, describing _what_ happens, rather than _how_. Often when we're reading code, we're darting through lots of files, and we're trying to understand _what_ is happening, rather than _how_, and this style of code facilitates this well.
+
+If I wish to dig in to the detail I can, and I can see the _business logic_ of `applyTransaction` without worrying about loops and mutating state; `Reduce` takes care of that separately.
+
 
 ### Fold/reduce are pretty universal
 
@@ -285,7 +359,7 @@ The possibilities are endless™️ with `Reduce` (or `Fold`). It's a common pat
 
 ## Find
 
-Now that Go has generics, combining them with higher-order-functions, we can reduce a lot of boilerplate code within our projects.
+Now that Go has generics, combining them with higher-order-functions, we can reduce a lot of boilerplate code within our projects, to help our systems be easier to understand and manage.
 
 No longer do you need to write specific `Find` functions for each type of collection you want to search, instead re-use or write a `Find` function. If you understood the `Reduce` function above, writing a `Find` function will be trivial.
 
@@ -376,73 +450,3 @@ Discuss with your colleagues patterns and style of code based on their merits ra
 Fold is a real fundamental in computer science. Here's some interesting resources if you wish to dig more into it
 - [Wikipedia: Fold](https://en.wikipedia.org/wiki/Fold)
 - [A tutorial on the universality and expressiveness of fold](http://www.cs.nott.ac.uk/~pszgmh/fold.pdf)
-
-## Extending the bank
-
-It wasn't important for the chapter, but for fun I extended the bank code to make it "feel" better.
-
-Here's the updated test
-
-```go
-func TestBadBank(t *testing.T) {
-	var (
-		riya  = Account{Name: "Riya", Balance: 100}
-		chris = Account{Name: "Chris", Balance: 75}
-		adil  = Account{Name: "Adil", Balance: 200}
-
-		transactions = []Transaction{
-			NewTransaction(chris, riya, 100),
-			NewTransaction(adil, chris, 25),
-		}
-	)
-
-	newBalanceFor := func(account Account) float64 {
-		return NewBalanceFor(account, transactions).Balance
-	}
-
-	AssertEqual(t, newBalanceFor(riya), 200)
-	AssertEqual(t, newBalanceFor(chris), 0)
-	AssertEqual(t, newBalanceFor(adil), 175)
-}
-```
-
-And here's the updated code
-
-```go
-package main
-
-type Transaction struct {
-	From string
-	To   string
-	Sum  float64
-}
-
-func NewTransaction(from, to Account, sum float64) Transaction {
-	return Transaction{From: from.Name, To: to.Name, Sum: sum}
-}
-
-type Account struct {
-	Name    string
-	Balance float64
-}
-
-func NewBalanceFor(account Account, transactions []Transaction) Account {
-	return Reduce(
-		transactions,
-		account,
-		applyTransaction,
-	)
-}
-
-func applyTransaction(a Account, transaction Transaction) Account {
-	if transaction.From == a.Name {
-		a.Balance -= transaction.Sum
-	}
-	if transaction.To == a.Name {
-		a.Balance += transaction.Sum
-	}
-	return a
-}
-```
-
-I feel this really shows the power of using concepts like `Reduce`. The `NewBalanceFor` feels more _declarative_, describing more about _what_ happens, rather than _how_. Often when we're reading code, we're darting through lots of files and we're trying to understand _what_ is happening, rather than _how_, and this style of code facilitates this well.
